@@ -1,73 +1,58 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Camera Demo</title>
+  <meta charset="UTF-8">
+  <title>Live Stream</title>
+  <style>
+    body { font-family: Arial; display: flex; justify-content: center;
+      align-items: center; height: 100vh; flex-direction: column; background:#111;color:#fff;}
+    video { width: 420px; border:3px solid #00ffcc; border-radius:10px;}
+    button { padding:10px 20px; margin-top:15px; border:none; background:#00ffcc;
+      font-weight:bold; border-radius:6px; cursor:pointer;}
+  </style>
 </head>
-
 <body>
-  <h2>Webcam Recording (Educational Demo)</h2>
-  <video id="video" width="400" height="300" autoplay playsinline></video>
 
-  <button id="startCam">Start Camera</button>
-  <button id="startBtn" disabled>Start Recording</button>
-  <button id="stopBtn" disabled>Stop Recording</button>
+  <h2>📡 Live Stream</h2>
+  <video id="screen" autoplay playsinline></video>
 
-  <script>
-    const video = document.getElementById('video');
-    let mediaRecorder;
-    let recordedChunks = [];
+  <button onclick="startAsSender()">🎥 Start as Employee (Send)</button>
+  <button onclick="startAsViewer()">👁️ Start as Admin (View)</button>
 
-    document.getElementById("startCam").onclick = startCamera;
+<script>
+  const screen = document.getElementById("screen");
+  const pc = new RTCPeerConnection();
+  let ws = new WebSocket("wss://your-server.com"); // 🔴 CHANGE THIS
 
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
-          audio: true
-        });
-
-        video.srcObject = stream;
-
-        // Browser compatible options
-        let options = { mimeType: "video/webm; codecs=vp9" };
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-          options = { mimeType: "video/webm; codecs=vp8" };
-        }
-        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-          options = { mimeType: "video/webm" };
-        }
-
-        mediaRecorder = new MediaRecorder(stream, options);
-
-        mediaRecorder.ondataavailable = event => recordedChunks.push(event.data);
-
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(recordedChunks, { type: "video/webm" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = "recorded-video.webm";
-          a.click();
-        };
-
-        document.getElementById("startBtn").disabled = false;
-
-      } catch (error) {
-        alert("Camera Permission Denied or Not Available");
+  // 📌 Admin viewer
+  async function startAsViewer() {
+    pc.ontrack = event => screen.srcObject = event.streams[0];
+    ws.onmessage = async msg => {
+      let data = JSON.parse(msg.data);
+      if (data.type === "offer") {
+        await pc.setRemoteDescription(data.offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: "answer", answer }));
       }
-    }
-
-    document.getElementById("startBtn").onclick = () => {
-      mediaRecorder.start();
-      document.getElementById("stopBtn").disabled = false;
-      document.getElementById("startBtn").disabled = true;
     };
+  }
 
-    document.getElementById("stopBtn").onclick = () => {
-      mediaRecorder.stop();
-      document.getElementById("stopBtn").disabled = true;
-      document.getElementById("startBtn").disabled = false;
+  // 🎥 Employee sender
+  async function startAsSender() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+    screen.srcObject = stream;
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type:"offer", offer }));
+
+    ws.onmessage = async msg => {
+      let data = JSON.parse(msg.data);
+      if (data.type === "answer") { await pc.setRemoteDescription(data.answer); }
     };
-  </script>
+  }
+</script>
 </body>
 </html>
