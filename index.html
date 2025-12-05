@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serverless WebRTC Peer-to-Peer Stream</title>
+    <title>Reliable P2P Video Stream (Manual Signaling)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Custom styling for a smooth, centered experience */
@@ -46,7 +46,7 @@
             P2P Video Stream (Manual Signaling)
         </h1>
         <p class="text-sm text-center text-red-600 mb-6 font-medium bg-red-50 p-3 rounded-lg">
-            ⚠️ This is a serverless demo. You must manually copy the text (SDP) from one device and paste it into the other to connect.
+            ⚠️ This is a serverless demo. The key is to **copy all the generated text (SDP) and paste it exactly** into the other device.
         </p>
 
         <!-- Video Streams -->
@@ -87,12 +87,12 @@
                     <!-- Column A: Create Offer/Answer -->
                     <div>
                         <h3 class="text-lg font-semibold mb-2 text-gray-800">Your Output (Copy this)</h3>
-                        <textarea id="sdpOutput" placeholder="The Offer or Answer will appear here. Copy this text and paste it into the 'Remote Input' box on the other device." rows="8" class="w-full p-2 border border-gray-300 rounded-lg bg-white"></textarea>
+                        <textarea id="sdpOutput" placeholder="The Offer or Answer will appear here. Copy this text (it is copied automatically if allowed) and paste it into the 'Remote Input' box on the other device." rows="8" class="w-full p-2 border border-gray-300 rounded-lg bg-white"></textarea>
                         <button id="createOfferButton" disabled class="w-full mt-2 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition duration-300 disabled:opacity-50">
-                            Create Offer
+                            Create Offer (Streamer First Step)
                         </button>
                         <button id="createAnswerButton" disabled class="w-full mt-2 py-2 bg-yellow-600 text-white font-semibold rounded-lg hover:bg-yellow-700 transition duration-300 disabled:opacity-50">
-                            Create Answer
+                            Create Answer (Viewer Second Step)
                         </button>
                     </div>
 
@@ -141,6 +141,30 @@
             ? 'text-sm text-red-600 font-semibold' 
             : 'text-sm text-indigo-600 font-semibold';
     }
+    
+    // Helper function to wait for ICE gathering to complete before retrieving the SDP
+    function waitForIceGatheringComplete() {
+        return new Promise(resolve => {
+            if (peerConnection.iceGatheringState === 'complete') {
+                resolve();
+            } else {
+                const checkState = () => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        peerConnection.removeEventListener('icegatheringstatechange', checkState);
+                        // No need to remove icecandidate listener as we haven't added one here
+                        resolve();
+                    }
+                };
+                peerConnection.addEventListener('icegatheringstatechange', checkState);
+                
+                // Fallback timeout in case ICE gathering stalls (5 seconds)
+                setTimeout(() => {
+                    peerConnection.removeEventListener('icegatheringstatechange', checkState);
+                    resolve();
+                }, 5000); 
+            }
+        });
+    }
 
     // --- WebRTC Core Functions ---
 
@@ -176,11 +200,9 @@
                     updateStatus('Connection established! Streaming live.', false);
                 }
             };
-
-            // Handle ICE candidates (this is the network information)
+            
+            // Log ICE candidates, but we rely on waitForIceGatheringComplete for the final SDP
             peerConnection.onicecandidate = (event) => {
-                // In manual signaling, we wait for ICE gathering to complete before outputting the SDP
-                // to get a more complete SDP that includes candidates.
                 if (event.candidate) {
                     console.log(`ICE candidate gathered: ${event.candidate.type}`);
                 }
@@ -208,12 +230,21 @@
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
             
-            // Wait briefly for ICE gathering to complete before displaying the SDP
-            await new Promise(r => setTimeout(r, 1000));
+            // RELIABILITY FIX: Wait for ICE gathering to complete
+            updateStatus('Waiting for network information (ICE) to gather... Please wait.', false);
+            await waitForIceGatheringComplete();
             
             sdpOutput.value = JSON.stringify(peerConnection.localDescription);
-            updateStatus('Offer created. Copy the text above and paste it into the other device.', false);
-            createAnswerButton.disabled = true; // Only one action should be enabled after offer
+            
+            // Attempt to copy to clipboard
+            try {
+                await navigator.clipboard.writeText(sdpOutput.value);
+                updateStatus('Offer created and copied to clipboard! Paste this text into the other device.', false);
+            } catch (e) {
+                updateStatus('Offer created. Copy the text above and paste it into the other device.', false);
+            }
+            
+            createAnswerButton.disabled = true; // Streamer's next step is setting the remote answer
             createOfferButton.disabled = true;
 
         } catch (e) {
@@ -242,15 +273,22 @@
             await peerConnection.setRemoteDescription(remoteSdp);
             
             if (remoteSdp.type === 'offer') {
-                // If we received an Offer, we need to generate an Answer next
-                updateStatus('Remote Offer set. Now, click "Create Answer".', false);
+                // Viewer flow: If we received an Offer, we need to generate an Answer next
+                if (!localStream) {
+                     // Viewer needs to grab local stream if they haven't already
+                     await startCameraAndInitialize();
+                }
+                updateStatus('Remote Offer set. Now, click "Create Answer" to finalize.', false);
                 createAnswerButton.disabled = false;
-                createOfferButton.disabled = true; // Disable Offer
+                createOfferButton.disabled = true; 
             } else if (remoteSdp.type === 'answer') {
-                // If we received an Answer, the connection process is complete
+                // Streamer flow: If we received an Answer, the connection process is complete
                 updateStatus('Remote Answer set. Connection attempt initiating...', false);
                 createAnswerButton.disabled = true; 
+                createOfferButton.disabled = true;
             }
+            
+            setRemoteButton.disabled = true; // Disable until a new SDP is needed
 
         } catch (e) {
             console.error('Error setting remote description:', e);
@@ -269,11 +307,20 @@
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
 
-            // Wait briefly for ICE gathering
-            await new Promise(r => setTimeout(r, 1000));
+            // RELIABILITY FIX: Wait for ICE gathering to complete
+            updateStatus('Waiting for network information (ICE) to gather... Please wait.', false);
+            await waitForIceGatheringComplete();
             
             sdpOutput.value = JSON.stringify(peerConnection.localDescription);
-            updateStatus('Answer created. Copy this text and paste it into the other device.', false);
+
+            // Attempt to copy to clipboard
+            try {
+                await navigator.clipboard.writeText(sdpOutput.value);
+                updateStatus('Answer created and copied to clipboard! Paste this text back into the first device.', false);
+            } catch (e) {
+                updateStatus('Answer created. Copy the text above and paste it back into the first device.', false);
+            }
+            
             createAnswerButton.disabled = true;
             createOfferButton.disabled = true;
         } catch (e) {
