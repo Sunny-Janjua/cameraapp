@@ -3,44 +3,71 @@
 <head>
   <title>Camera Demo</title>
 </head>
+
 <body>
   <h2>Webcam Recording (Educational Demo)</h2>
-  <video id="video" width="400" height="300" autoplay></video>
-  <button id="startBtn">Start Recording</button>
-  <button id="stopBtn">Stop Recording</button>
+  <video id="video" width="400" height="300" autoplay playsinline></video>
+
+  <button id="startCam">Start Camera</button>
+  <button id="startBtn" disabled>Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
 
   <script>
     const video = document.getElementById('video');
     let mediaRecorder;
     let recordedChunks = [];
 
+    document.getElementById("startCam").onclick = startCamera;
+
     async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" }, audio: true
+          video: { facingMode: "user" },
+          audio: true
         });
+
         video.srcObject = stream;
-        mediaRecorder = new MediaRecorder(stream);
+
+        // Browser compatible options
+        let options = { mimeType: "video/webm; codecs=vp9" };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options = { mimeType: "video/webm; codecs=vp8" };
+        }
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options = { mimeType: "video/webm" };
+        }
+
+        mediaRecorder = new MediaRecorder(stream, options);
 
         mediaRecorder.ondataavailable = event => recordedChunks.push(event.data);
+
         mediaRecorder.onstop = () => {
-          const blob = new Blob(recordedChunks, { type: "video/mp4" });
+          const blob = new Blob(recordedChunks, { type: "video/webm" });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = "recorded-video.mp4";
+          a.download = "recorded-video.webm";
           a.click();
         };
 
+        document.getElementById("startBtn").disabled = false;
+
       } catch (error) {
-        alert("Camera Permission Denied");
+        alert("Camera Permission Denied or Not Available");
       }
     }
 
-    document.getElementById("startBtn").onclick = () => mediaRecorder.start();
-    document.getElementById("stopBtn").onclick = () => mediaRecorder.stop();
+    document.getElementById("startBtn").onclick = () => {
+      mediaRecorder.start();
+      document.getElementById("stopBtn").disabled = false;
+      document.getElementById("startBtn").disabled = true;
+    };
 
-    startCamera();
+    document.getElementById("stopBtn").onclick = () => {
+      mediaRecorder.stop();
+      document.getElementById("stopBtn").disabled = true;
+      document.getElementById("startBtn").disabled = false;
+    };
   </script>
 </body>
 </html>
