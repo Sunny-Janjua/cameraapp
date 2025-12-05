@@ -3,8 +3,269 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Privacy-Focused Webcam Demo</title>
+    <title>WebRTC Peer-to-Peer Video Stream</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, getDocs, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- Global Variables ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        let db, auth;
+        let userId = 'loading...';
+        let peerConnection;
+        let localStream;
+        const configuration = { 
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ] 
+        }; // STUN servers for NAT traversal
+
+        // --- DOM Elements ---
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const sessionIdInput = document.getElementById('sessionIdInput');
+        const startButton = document.getElementById('startButton');
+        const joinButton = document.getElementById('joinButton');
+        const statusElement = document.getElementById('status');
+        const userIdDisplay = document.getElementById('userIdDisplay');
+        const signalingLog = document.getElementById('signalingLog');
+
+        // --- Utility Functions ---
+        function updateStatus(message, isError = false) {
+            statusElement.textContent = message;
+            statusElement.className = isError 
+                ? 'text-red-600 font-semibold' 
+                : 'text-indigo-600 font-semibold';
+        }
+
+        function logSignaling(message) {
+            const time = new Date().toLocaleTimeString();
+            signalingLog.innerHTML += `<div class="text-xs text-gray-500">${time}: ${message}</div>`;
+            signalingLog.scrollTop = signalingLog.scrollHeight;
+        }
+
+        // --- Firebase Initialization and Auth ---
+        async function initializeFirebase() {
+            try {
+                setLogLevel('Debug');
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authentication
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        userIdDisplay.textContent = `User ID: ${userId}`;
+                        updateStatus('Ready. Enter Session ID and choose an action.');
+                        startButton.disabled = false;
+                        joinButton.disabled = false;
+                    } else {
+                        updateStatus('Authentication failed.', true);
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                updateStatus(`Firebase Error: ${error.message}`, true);
+            }
+        }
+        
+        // --- WebRTC Logic ---
+
+        // Helper to get camera/mic stream
+        async function getMediaStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                localVideo.classList.remove('hidden');
+                localVideo.muted = true; // Mute local preview
+                return localStream;
+            } catch (e) {
+                updateStatus('Camera access denied or device not found.', true);
+                throw e;
+            }
+        }
+
+        function setupPeerConnection(sessionRef) {
+            peerConnection = new RTCPeerConnection(configuration);
+
+            // 1. Add local tracks to the peer connection
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            // 2. Handle remote tracks (the incoming stream)
+            peerConnection.ontrack = (event) => {
+                logSignaling("Received remote track.");
+                if (remoteVideo.srcObject !== event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.classList.remove('hidden');
+                    document.getElementById('remote-status').style.display = 'none';
+                }
+            };
+
+            // 3. Handle ICE candidates (network information)
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    logSignaling(`Sending ICE candidate type: ${event.candidate.type}`);
+                    // Send candidate to Firestore
+                    const candidateData = event.candidate.toJSON();
+                    addDoc(collection(sessionRef, 'candidates'), {
+                        senderId: userId,
+                        candidate: JSON.stringify(candidateData),
+                        timestamp: serverTimestamp()
+                    });
+                }
+            };
+
+            // 4. Listen for candidates from the other peer
+            onSnapshot(collection(sessionRef, 'candidates'), (snapshot) => {
+                snapshot.docChanges().forEach(async (change) => {
+                    if (change.type === 'added') {
+                        const data = change.doc.data();
+                        if (data.senderId !== userId) { // Only process candidates from the other peer
+                            logSignaling(`Received ICE candidate from remote peer.`);
+                            try {
+                                const candidate = new RTCIceCandidate(JSON.parse(data.candidate));
+                                await peerConnection.addIceCandidate(candidate);
+                            } catch (e) {
+                                console.error('Error adding received ICE candidate:', e);
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        async function startStreamer() {
+            const sessionId = sessionIdInput.value.trim();
+            if (!sessionId) {
+                updateStatus('Please enter a Session ID.', true);
+                return;
+            }
+            logSignaling(`Starting stream as Streamer with ID: ${sessionId}`);
+            updateStatus('Starting camera and creating session...');
+
+            try {
+                await getMediaStream();
+
+                const sessionRef = doc(db, 'artifacts', appId, 'public', 'data', 'webrtc-sessions', sessionId);
+                
+                // Clear any previous session data (important for testing)
+                const candidatesSnapshot = await getDocs(collection(sessionRef, 'candidates'));
+                candidatesSnapshot.forEach(d => deleteDoc(d.ref));
+                await deleteDoc(sessionRef).catch(() => {}); // Attempt to delete the session doc itself
+
+                await setDoc(sessionRef, { creator: userId, status: 'offering', createdAt: serverTimestamp() });
+                logSignaling('Signaling session created in Firestore.');
+                setupPeerConnection(sessionRef);
+
+                // 1. Create Offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                logSignaling('Sending SDP Offer...');
+                
+                // 2. Send Offer to Firestore
+                await updateDoc(sessionRef, { offer: JSON.stringify(peerConnection.localDescription) });
+                updateStatus('Waiting for Viewer to join...');
+
+                // 3. Listen for Answer
+                const unsubscribe = onSnapshot(sessionRef, async (docSnap) => {
+                    const data = docSnap.data();
+                    if (data && data.answer && peerConnection.remoteDescription == null) {
+                        logSignaling('Received SDP Answer.');
+                        try {
+                            const answer = JSON.parse(data.answer);
+                            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                            updateStatus('Connection established! Streaming...');
+                            unsubscribe(); // Stop listening for the answer once received
+                        } catch (e) {
+                            console.error('Error processing answer:', e);
+                            updateStatus('Error processing answer.', true);
+                        }
+                    }
+                });
+
+            } catch (e) {
+                console.error('Streamer Error:', e);
+            }
+        }
+
+        async function joinStream() {
+            const sessionId = sessionIdInput.value.trim();
+            if (!sessionId) {
+                updateStatus('Please enter a Session ID.', true);
+                return;
+            }
+            logSignaling(`Joining stream as Viewer with ID: ${sessionId}`);
+            updateStatus('Checking for active stream...');
+
+            const sessionRef = doc(db, 'artifacts', appId, 'public', 'data', 'webrtc-sessions', sessionId);
+
+            // 1. Listen for Offer
+            const docSnap = await getDoc(sessionRef);
+            if (!docSnap.exists() || !docSnap.data().offer) {
+                updateStatus('No active stream found with this ID.', true);
+                return;
+            }
+            
+            // Viewer does not need to get local media, only remote media
+            // But we must initialize the peer connection first
+            setupPeerConnection(sessionRef);
+
+            // 2. Set Remote Description (Offer)
+            const offerData = JSON.parse(docSnap.data().offer);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offerData));
+            logSignaling('Received SDP Offer.');
+
+            // 3. Create Answer
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            logSignaling('Sending SDP Answer...');
+
+            // 4. Send Answer to Firestore
+            await updateDoc(sessionRef, { 
+                answer: JSON.stringify(peerConnection.localDescription), 
+                viewerId: userId 
+            });
+            updateStatus('Attempting connection...');
+
+            // Viewer should not listen for answer, as it already sent it.
+            // Connection will be established via ICE candidates (handled in setupPeerConnection)
+        }
+
+        // --- Event Listeners and Initial Load ---
+        startButton.addEventListener('click', startStreamer);
+        joinButton.addEventListener('click', joinStream);
+
+        initializeFirebase();
+
+        // Ensure cleanup if the browser closes
+        window.onbeforeunload = async () => {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            // Optional: delete session document if this was the creator
+        };
+        
+    </script>
     <style>
         /* Custom styling for a smooth, centered experience */
         .container {
@@ -15,92 +276,85 @@
             background-color: #f0f4f8;
             font-family: 'Inter', sans-serif;
         }
-        video {
+        .video-box {
             border: 4px solid #4f46e5;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .video-label {
+            position: absolute;
+            top: 0.5rem;
+            left: 0.5rem;
+            background: rgba(0,0,0,0.5);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
         }
     </style>
 </head>
 <body>
 
 <div class="container p-4">
-    <div class="w-full max-w-2xl bg-white p-8 rounded-xl shadow-2xl">
-        <h1 class="text-3xl font-bold text-gray-800 mb-4 text-center">
-            Consensual Camera Access Demo
+    <div class="w-full max-w-4xl bg-white p-6 md:p-8 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-extrabold text-gray-800 mb-2 text-center">
+            P2P Video Stream (WebRTC + Firestore)
         </h1>
+        <p class="text-xs text-center text-gray-500 mb-4" id="userIdDisplay">User ID: Loading...</p>
         <p class="text-sm text-center text-red-600 mb-6 font-medium bg-red-50 p-3 rounded-lg">
-            ⚠️ This demonstration requires your browser's explicit permission to access your camera. No data is recorded or sent anywhere.
+            ⚠️ This application uses your camera and microphone to stream live data peer-to-peer (P2P) between devices. Data is **not** stored or recorded centrally.
         </p>
 
-        <!-- Video Stream Area -->
-        <div id="video-container" class="relative w-full aspect-video rounded-lg overflow-hidden mb-6 bg-gray-200 flex items-center justify-center">
-            <video id="webcam-feed" autoplay playsinline class="w-full h-full object-cover rounded-lg hidden"></video>
-            <div id="status-message" class="text-gray-500 p-8 text-center">
-                Click the button below to request camera access.
+        <!-- Session Setup -->
+        <div class="flex flex-col md:flex-row gap-4 mb-6">
+            <input type="text" id="sessionIdInput" placeholder="Enter Session ID (e.g., 1234)" 
+                   class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm">
+            
+            <button id="startButton" disabled
+                    class="px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                1. Start Streaming (Mobile)
+            </button>
+            <button id="joinButton" disabled
+                    class="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                2. Join Stream (Laptop)
+            </button>
+        </div>
+        
+        <!-- Status Display -->
+        <div class="text-center mb-4">
+            <p id="status" class="text-lg font-semibold text-gray-700">Initializing...</p>
+        </div>
+
+        <!-- Video Streams -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Local Video (Mobile/Streamer) -->
+            <div class="relative w-full aspect-video rounded-lg overflow-hidden bg-gray-700 flex items-center justify-center">
+                <video id="localVideo" autoplay playsinline class="w-full h-full object-cover rounded-lg hidden video-box"></video>
+                <span class="video-label">Your Local View</span>
+                <div id="local-status" class="text-gray-300 p-8 text-center absolute">
+                    Local camera not active.
+                </div>
+            </div>
+
+            <!-- Remote Video (Laptop/Viewer) -->
+            <div class="relative w-full aspect-video rounded-lg overflow-hidden bg-gray-900 flex items-center justify-center">
+                <video id="remoteVideo" autoplay playsinline class="w-full h-full object-cover rounded-lg hidden video-box"></video>
+                <span class="video-label bg-red-600">Remote Stream</span>
+                <div id="remote-status" class="text-gray-300 p-8 text-center absolute">
+                    Waiting for remote peer to connect and stream.
+                </div>
+            </div>
+        </div>
+        
+        <!-- Signaling Log -->
+        <div class="mt-6">
+            <h3 class="text-xl font-semibold mb-2 text-gray-700">Signaling Log</h3>
+            <div id="signalingLog" class="h-32 bg-gray-100 p-3 rounded-lg overflow-y-scroll border border-gray-300">
+                <!-- Signaling messages will appear here -->
             </div>
         </div>
 
-        <!-- Control Button -->
-        <div class="flex justify-center">
-            <button id="start-button" 
-                    class="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50">
-                Start Webcam
-            </button>
-        </div>
-
-        <!-- Error/Status Logging -->
-        <p id="error-log" class="mt-4 text-sm text-red-500 h-6 text-center"></p>
-
     </div>
 </div>
-
-<script>
-    const startButton = document.getElementById('start-button');
-    const videoElement = document.getElementById('webcam-feed');
-    const statusMessage = document.getElementById('status-message');
-    const errorLog = document.getElementById('error-log');
-
-    // Function to handle media stream success
-    function handleSuccess(stream) {
-        window.stream = stream; // make stream available to the browser console
-        videoElement.srcObject = stream;
-        videoElement.classList.remove('hidden');
-        statusMessage.style.display = 'none';
-        startButton.textContent = 'Streaming Live';
-        startButton.disabled = true;
-        startButton.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
-        startButton.classList.add('bg-green-600');
-    }
-
-    // Function to handle errors
-    function handleError(error) {
-        console.error('navigator.mediaDevices.getUserMedia error:', error);
-        errorLog.textContent = `Error: ${error.name}. Please ensure your camera is enabled and you grant permission.`;
-        statusMessage.textContent = 'Camera access denied or device not found.';
-        startButton.disabled = false;
-        startButton.textContent = 'Try Again';
-    }
-
-    // Main function to request camera access
-    function startCamera() {
-        // Constraints: request video only, no audio
-        const constraints = { video: true, audio: false };
-        
-        // Use the MediaDevices API to prompt the user for camera access
-        navigator.mediaDevices.getUserMedia(constraints)
-            .then(handleSuccess)
-            .catch(handleError);
-
-        // Update status while waiting for permission
-        statusMessage.textContent = 'Awaiting camera permission...';
-        startButton.textContent = 'Loading...';
-        startButton.disabled = true;
-    }
-
-    // Event Listener for the button
-    startButton.addEventListener('click', startCamera);
-
-</script>
 
 </body>
 </html>
