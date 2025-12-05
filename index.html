@@ -1,116 +1,106 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>📹 Live Stream</title>
-<style>
-body{
-  margin:0;background:#111;color:white;font-family:Arial;display:flex;
-  justify-content:center;align-items:center;height:100vh;flex-direction:column;
-}
-h2{margin-bottom:20px;}
-#videoBox{border:3px solid #04F5C0;border-radius:10px;width:340px;height:240px;
-  display:flex;justify-content:center;align-items:center;background:#000;}
-button{padding:12px 20px;margin-top:15px;background:#04F5C0;border:none;
-  color:#000;font-weight:bold;border-radius:8px;cursor:pointer;width:220px;}
-button:hover{opacity:.8;}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy-Focused Webcam Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styling for a smooth, centered experience */
+        .container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f0f4f8;
+            font-family: 'Inter', sans-serif;
+        }
+        video {
+            border: 4px solid #4f46e5;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+    </style>
 </head>
 <body>
 
-<h2>📹 Live Stream</h2>
+<div class="container p-4">
+    <div class="w-full max-w-2xl bg-white p-8 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-gray-800 mb-4 text-center">
+            Consensual Camera Access Demo
+        </h1>
+        <p class="text-sm text-center text-red-600 mb-6 font-medium bg-red-50 p-3 rounded-lg">
+            ⚠️ This demonstration requires your browser's explicit permission to access your camera. No data is recorded or sent anywhere.
+        </p>
 
-<div id="videoBox">
-  <video id="video" autoplay playsinline muted style="width:100%;height:100%;border-radius:10px;"></video>
+        <!-- Video Stream Area -->
+        <div id="video-container" class="relative w-full aspect-video rounded-lg overflow-hidden mb-6 bg-gray-200 flex items-center justify-center">
+            <video id="webcam-feed" autoplay playsinline class="w-full h-full object-cover rounded-lg hidden"></video>
+            <div id="status-message" class="text-gray-500 p-8 text-center">
+                Click the button below to request camera access.
+            </div>
+        </div>
+
+        <!-- Control Button -->
+        <div class="flex justify-center">
+            <button id="start-button" 
+                    class="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50">
+                Start Webcam
+            </button>
+        </div>
+
+        <!-- Error/Status Logging -->
+        <p id="error-log" class="mt-4 text-sm text-red-500 h-6 text-center"></p>
+
+    </div>
 </div>
 
-<button onclick="startEmployee()">👨‍💻 Start as Employee (Send)</button>
-<button onclick="startAdmin()">👁️ Start as Admin (View)</button>
-
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase.js"></script>
-
 <script>
-  // 🔥 Your Firebase Config
-  firebase.initializeApp({
-    apiKey: "AIzaSyC1MQzKtdzp0dr0Z8HEFr7XezbvyGUdMV8",
-    authDomain: "web-app-b59be.firebaseapp.com",
-    databaseURL: "https://web-app-b59be-default-rtdb.firebaseio.com",
-    projectId: "web-app-b59be",
-    storageBucket: "web-app-b59be.appspot.com",
-    messagingSenderId: "916960538508",
-    appId: "1:916960538508:web:d0988676fe0952539c70a9",
-    measurementId: "G-6XVYFG6GD2"
-  });
+    const startButton = document.getElementById('start-button');
+    const videoElement = document.getElementById('webcam-feed');
+    const statusMessage = document.getElementById('status-message');
+    const errorLog = document.getElementById('error-log');
 
-  const db = firebase.database();
-  let peer;
+    // Function to handle media stream success
+    function handleSuccess(stream) {
+        window.stream = stream; // make stream available to the browser console
+        videoElement.srcObject = stream;
+        videoElement.classList.remove('hidden');
+        statusMessage.style.display = 'none';
+        startButton.textContent = 'Streaming Live';
+        startButton.disabled = true;
+        startButton.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+        startButton.classList.add('bg-green-600');
+    }
 
-  // 🧑‍💻 Employee Side (Sender)
-  async function startEmployee(){
-    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-    document.getElementById("video").srcObject = stream;
+    // Function to handle errors
+    function handleError(error) {
+        console.error('navigator.mediaDevices.getUserMedia error:', error);
+        errorLog.textContent = `Error: ${error.name}. Please ensure your camera is enabled and you grant permission.`;
+        statusMessage.textContent = 'Camera access denied or device not found.';
+        startButton.disabled = false;
+        startButton.textContent = 'Try Again';
+    }
 
-    peer = new RTCPeerConnection();
+    // Main function to request camera access
+    function startCamera() {
+        // Constraints: request video only, no audio
+        const constraints = { video: true, audio: false };
+        
+        // Use the MediaDevices API to prompt the user for camera access
+        navigator.mediaDevices.getUserMedia(constraints)
+            .then(handleSuccess)
+            .catch(handleError);
 
-    stream.getTracks().forEach(track => peer.addTrack(track, stream));
+        // Update status while waiting for permission
+        statusMessage.textContent = 'Awaiting camera permission...';
+        startButton.textContent = 'Loading...';
+        startButton.disabled = true;
+    }
 
-    // Send ICE candidates
-    peer.onicecandidate = e => {
-      if(e.candidate){
-        db.ref("employeeCandidates").push(e.candidate.toJSON());
-      }
-    };
+    // Event Listener for the button
+    startButton.addEventListener('click', startCamera);
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    db.ref("offer").set(JSON.stringify(offer));
-
-    // Listen for answer from Admin
-    db.ref("answer").on("value", async snap => {
-      if(!snap.val()) return;
-      const answer = JSON.parse(snap.val());
-      await peer.setRemoteDescription(new RTCSessionDescription(answer));
-    });
-  }
-
-  // 👁️ Admin Side (Viewer)
-  async function startAdmin(){
-    peer = new RTCPeerConnection();
-
-    peer.ontrack = e => document.getElementById("video").srcObject = e.streams[0];
-
-    // Send ICE candidates
-    peer.onicecandidate = e => {
-      if(e.candidate){
-        db.ref("adminCandidates").push(e.candidate.toJSON());
-      }
-    };
-
-    // Listen for offer
-    db.ref("offer").on("value", async snap => {
-      if(!snap.val()) return;
-      const offer = JSON.parse(snap.val());
-      await peer.setRemoteDescription(new RTCSessionDescription(offer));
-
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      db.ref("answer").set(JSON.stringify(answer));
-    });
-
-    // Listen for Employee ICE candidates
-    db.ref("employeeCandidates").on("child_added", snap => {
-      if(snap.val()){
-        peer.addIceCandidate(new RTCIceCandidate(snap.val()));
-      }
-    });
-
-    // Listen for Admin ICE candidates (optional, for completeness)
-    db.ref("adminCandidates").on("child_added", snap => {
-      if(snap.val()){
-        peer.addIceCandidate(new RTCIceCandidate(snap.val()));
-      }
-    });
-  }
 </script>
+
 </body>
 </html>
