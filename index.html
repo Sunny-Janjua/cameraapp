@@ -30,59 +30,87 @@ button:hover{opacity:.8;}
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase.js"></script>
 
 <script>
-// 🔥 Your Firebase Config (paste your own)
-firebase.initializeApp({
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_ID",
-  appId: "YOUR_APP_ID"
-});
-
-const db = firebase.database();
-let peer, conn;
-
-// 🧑‍💻 Employee Side (Sender)
-async function startEmployee(){
-  const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-  document.getElementById("video").srcObject = stream;
-
-  peer = new RTCPeerConnection();
-  stream.getTracks().forEach(t => peer.addTrack(t, stream));
-
-  peer.onicecandidate = e => e.candidate && db.ref("candidate").set(e.candidate.toJSON());
-
-  const offer = await peer.createOffer();
-  await peer.setLocalDescription(offer);
-  db.ref("offer").set(JSON.stringify(offer));
-}
-
-// 👁️ Admin Side (Viewer)
-async function startAdmin(){
-  peer = new RTCPeerConnection();
-
-  peer.ontrack = (e)=> document.getElementById("video").srcObject = e.streams[0];
-  peer.onicecandidate = e => e.candidate && db.ref("candidate2").set(e.candidate.toJSON());
-
-  db.ref("offer").on("value", async snap=>{
-    if(!snap.val()) return;
-    const offer = JSON.parse(snap.val());
-    await peer.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    db.ref("answer").set(JSON.stringify(answer));
+  // 🔥 Your Firebase Config
+  firebase.initializeApp({
+    apiKey: "AIzaSyC1MQzKtdzp0dr0Z8HEFr7XezbvyGUdMV8",
+    authDomain: "web-app-b59be.firebaseapp.com",
+    databaseURL: "https://web-app-b59be-default-rtdb.firebaseio.com",
+    projectId: "web-app-b59be",
+    storageBucket: "web-app-b59be.appspot.com",
+    messagingSenderId: "916960538508",
+    appId: "1:916960538508:web:d0988676fe0952539c70a9",
+    measurementId: "G-6XVYFG6GD2"
   });
 
-  db.ref("candidate").on("value", snap=>{
-    if(snap.val()) peer.addIceCandidate(new RTCIceCandidate(snap.val()));
-  });
+  const db = firebase.database();
+  let peer;
 
-  db.ref("answer").on("value", snap=>{
-    if(snap.val()) peer.setRemoteDescription(new RTCSessionDescription(JSON.parse(snap.val())));
-  });
-}
+  // 🧑‍💻 Employee Side (Sender)
+  async function startEmployee(){
+    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+    document.getElementById("video").srcObject = stream;
+
+    peer = new RTCPeerConnection();
+
+    stream.getTracks().forEach(track => peer.addTrack(track, stream));
+
+    // Send ICE candidates
+    peer.onicecandidate = e => {
+      if(e.candidate){
+        db.ref("employeeCandidates").push(e.candidate.toJSON());
+      }
+    };
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    db.ref("offer").set(JSON.stringify(offer));
+
+    // Listen for answer from Admin
+    db.ref("answer").on("value", async snap => {
+      if(!snap.val()) return;
+      const answer = JSON.parse(snap.val());
+      await peer.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+  }
+
+  // 👁️ Admin Side (Viewer)
+  async function startAdmin(){
+    peer = new RTCPeerConnection();
+
+    peer.ontrack = e => document.getElementById("video").srcObject = e.streams[0];
+
+    // Send ICE candidates
+    peer.onicecandidate = e => {
+      if(e.candidate){
+        db.ref("adminCandidates").push(e.candidate.toJSON());
+      }
+    };
+
+    // Listen for offer
+    db.ref("offer").on("value", async snap => {
+      if(!snap.val()) return;
+      const offer = JSON.parse(snap.val());
+      await peer.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      db.ref("answer").set(JSON.stringify(answer));
+    });
+
+    // Listen for Employee ICE candidates
+    db.ref("employeeCandidates").on("child_added", snap => {
+      if(snap.val()){
+        peer.addIceCandidate(new RTCIceCandidate(snap.val()));
+      }
+    });
+
+    // Listen for Admin ICE candidates (optional, for completeness)
+    db.ref("adminCandidates").on("child_added", snap => {
+      if(snap.val()){
+        peer.addIceCandidate(new RTCIceCandidate(snap.val()));
+      }
+    });
+  }
 </script>
 </body>
 </html>
