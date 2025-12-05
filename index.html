@@ -1,58 +1,88 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Live Stream</title>
-  <style>
-    body { font-family: Arial; display: flex; justify-content: center;
-      align-items: center; height: 100vh; flex-direction: column; background:#111;color:#fff;}
-    video { width: 420px; border:3px solid #00ffcc; border-radius:10px;}
-    button { padding:10px 20px; margin-top:15px; border:none; background:#00ffcc;
-      font-weight:bold; border-radius:6px; cursor:pointer;}
-  </style>
+<meta charset="UTF-8">
+<title>📹 Live Stream</title>
+<style>
+body{
+  margin:0;background:#111;color:white;font-family:Arial;display:flex;
+  justify-content:center;align-items:center;height:100vh;flex-direction:column;
+}
+h2{margin-bottom:20px;}
+#videoBox{border:3px solid #04F5C0;border-radius:10px;width:340px;height:240px;
+  display:flex;justify-content:center;align-items:center;background:#000;}
+button{padding:12px 20px;margin-top:15px;background:#04F5C0;border:none;
+  color:#000;font-weight:bold;border-radius:8px;cursor:pointer;width:220px;}
+button:hover{opacity:.8;}
+</style>
 </head>
 <body>
 
-  <h2>📡 Live Stream</h2>
-  <video id="screen" autoplay playsinline></video>
+<h2>📹 Live Stream</h2>
 
-  <button onclick="startAsSender()">🎥 Start as Employee (Send)</button>
-  <button onclick="startAsViewer()">👁️ Start as Admin (View)</button>
+<div id="videoBox">
+  <video id="video" autoplay playsinline muted style="width:100%;height:100%;border-radius:10px;"></video>
+</div>
+
+<button onclick="startEmployee()">👨‍💻 Start as Employee (Send)</button>
+<button onclick="startAdmin()">👁️ Start as Admin (View)</button>
+
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase.js"></script>
 
 <script>
-  const screen = document.getElementById("screen");
-  const pc = new RTCPeerConnection();
-  let ws = new WebSocket("wss://your-server.com"); // 🔴 CHANGE THIS
+// 🔥 Your Firebase Config (paste your own)
+firebase.initializeApp({
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_ID",
+  appId: "YOUR_APP_ID"
+});
 
-  // 📌 Admin viewer
-  async function startAsViewer() {
-    pc.ontrack = event => screen.srcObject = event.streams[0];
-    ws.onmessage = async msg => {
-      let data = JSON.parse(msg.data);
-      if (data.type === "offer") {
-        await pc.setRemoteDescription(data.offer);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        ws.send(JSON.stringify({ type: "answer", answer }));
-      }
-    };
-  }
+const db = firebase.database();
+let peer, conn;
 
-  // 🎥 Employee sender
-  async function startAsSender() {
-    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-    screen.srcObject = stream;
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+// 🧑‍💻 Employee Side (Sender)
+async function startEmployee(){
+  const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+  document.getElementById("video").srcObject = stream;
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type:"offer", offer }));
+  peer = new RTCPeerConnection();
+  stream.getTracks().forEach(t => peer.addTrack(t, stream));
 
-    ws.onmessage = async msg => {
-      let data = JSON.parse(msg.data);
-      if (data.type === "answer") { await pc.setRemoteDescription(data.answer); }
-    };
-  }
+  peer.onicecandidate = e => e.candidate && db.ref("candidate").set(e.candidate.toJSON());
+
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  db.ref("offer").set(JSON.stringify(offer));
+}
+
+// 👁️ Admin Side (Viewer)
+async function startAdmin(){
+  peer = new RTCPeerConnection();
+
+  peer.ontrack = (e)=> document.getElementById("video").srcObject = e.streams[0];
+  peer.onicecandidate = e => e.candidate && db.ref("candidate2").set(e.candidate.toJSON());
+
+  db.ref("offer").on("value", async snap=>{
+    if(!snap.val()) return;
+    const offer = JSON.parse(snap.val());
+    await peer.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    db.ref("answer").set(JSON.stringify(answer));
+  });
+
+  db.ref("candidate").on("value", snap=>{
+    if(snap.val()) peer.addIceCandidate(new RTCIceCandidate(snap.val()));
+  });
+
+  db.ref("answer").on("value", snap=>{
+    if(snap.val()) peer.setRemoteDescription(new RTCSessionDescription(JSON.parse(snap.val())));
+  });
+}
 </script>
 </body>
 </html>
