@@ -1,110 +1,46 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Live Stream</title>
-
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Poppins", sans-serif; }
-  body {
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: radial-gradient(circle at top, #1b2332, #0c111b 60%);
-    color: #fff;
-  }
-  .wrapper {
-    text-align: center;
-    background: rgba(255,255,255,0.05);
-    padding: 30px 40px;
-    border-radius: 18px;
-    box-shadow: 0 0 45px rgba(0,255,195,0.18);
-    border: 1px solid rgba(0,255,195,0.35);
-    backdrop-filter: blur(12px);
-    animation: fadeIn .7s ease;
-  }
-  h1 {
-    font-weight: 600;
-    font-size: 1.8rem;
-    margin-bottom: 18px;
-    color: #00ffd5;
-    letter-spacing: 1px;
-    text-shadow: 0 0 12px #00ffd5;
-  }
-  video {
-    width: 430px;
-    height: 310px;
-    border-radius: 15px;
-    border: 3px solid #00ffcc;
-    box-shadow: 0 0 22px #00ffcc;
-    animation: glow 2.5s infinite ease-in-out;
-  }
-  button {
-    margin-top: 18px;
-    width: 160px;
-    padding: 10px 0;
-    border-radius: 8px;
-    border: none;
-    background: #00ffcc;
-    font-weight: 600;
-    cursor: pointer;
-    color: #002018;
-    transition: .25s;
-    font-size: 15px;
-    box-shadow: 0 0 10px #00ffcc;
-  }
-  button:hover { transform: scale(1.07); box-shadow: 0 0 18px #00ffd0; }
-
-  @keyframes glow {
-    0% { box-shadow: 0 0 20px #00ffcc; }
-    50% { box-shadow: 0 0 40px #00ffcc; }
-    100% { box-shadow: 0 0 20px #00ffcc; }
-  }
-  @keyframes fadeIn {
-    from { transform: translateY(40px); opacity: 0; }
-    to { transform: translateY(0px); opacity: 1; }
-  }
-  @media (max-width: 600px) {
-    video { width: 310px; height: 230px; }
-    h1 { font-size: 1.5rem; }
-  }
-</style>
-
+  <title>Camera Demo</title>
 </head>
 <body>
+  <h2>Webcam Recording (Educational Demo)</h2>
+  <video id="video" width="400" height="300" autoplay></video>
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn">Stop Recording</button>
 
-<div class="wrapper">
-  <h1>📡 Live Camera Stream</h1>
-  <video id="cam" autoplay playsinline></video>
-  <button id="toggle">🎥 Start Camera</button>
-</div>
+  <script>
+    const video = document.getElementById('video');
+    let mediaRecorder;
+    let recordedChunks = [];
 
-<script>
-  let streaming = false;
-  const cam = document.getElementById("cam");
-  const btn = document.getElementById("toggle");
-
-  btn.onclick = async () => {
-    if (!streaming) {
+    async function startCamera() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        cam.srcObject = stream;
-        btn.innerText = "🛑 Stop Camera";
-        streaming = true;
-      } catch {
-        alert("Camera permission needed!");
-      }
-    } else {
-      const tracks = cam.srcObject.getTracks();
-      tracks.forEach(t => t.stop());
-      cam.srcObject = null;
-      btn.innerText = "🎥 Start Camera";
-      streaming = false;
-    }
-  };
-</script>
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" }, audio: true
+        });
+        video.srcObject = stream;
+        mediaRecorder = new MediaRecorder(stream);
 
+        mediaRecorder.ondataavailable = event => recordedChunks.push(event.data);
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(recordedChunks, { type: "video/mp4" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "recorded-video.mp4";
+          a.click();
+        };
+
+      } catch (error) {
+        alert("Camera Permission Denied");
+      }
+    }
+
+    document.getElementById("startBtn").onclick = () => mediaRecorder.start();
+    document.getElementById("stopBtn").onclick = () => mediaRecorder.stop();
+
+    startCamera();
+  </script>
 </body>
 </html>
